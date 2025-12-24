@@ -1,0 +1,6 @@
+{
+  "left_dir": "/path/to/left/directory",
+  "right_dir": "/path/to/right/directory",
+  "show_unchanged": false
+}
+
