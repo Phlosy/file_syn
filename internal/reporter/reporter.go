@@ -33,51 +33,115 @@ func formatSize(size int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(size)/float64(div), "KMGTPE"[exp])
 }
 
-// getStatusSymbol 获取状态符号
-func getStatusSymbol(status string) string {
-	switch status {
-	case models.StatusAdded:
-		return "➕"
-	case models.StatusDeleted:
-		return "➖"
-	case models.StatusModified:
-		return "🔄"
-	case models.StatusUnchanged:
-		return "✓"
-	default:
-		return "?"
+// formatFileInfo 格式化文件信息
+func formatFileInfo(info *models.FileInfo) []string {
+	if info == nil {
+		return []string{"-"}
 	}
-}
 
-// getStatusText 获取状态文本
-func getStatusText(status string) string {
-	switch status {
-	case models.StatusAdded:
-		return "新增"
-	case models.StatusDeleted:
-		return "删除"
-	case models.StatusModified:
-		return "修改"
-	case models.StatusUnchanged:
-		return "未变更"
-	default:
-		return "未知"
+	var lines []string
+	if info.IsDir {
+		lines = append(lines, fmt.Sprintf("📁 %s", info.Path))
+		lines = append(lines, "   [目录]")
+	} else {
+		lines = append(lines, fmt.Sprintf("📄 %s", info.Path))
+		lines = append(lines, fmt.Sprintf("   大小: %s", formatSize(info.Size)))
+		lines = append(lines, fmt.Sprintf("   时间: %s", info.ModTime.Format("2006-01-02 15:04:05")))
+		lines = append(lines, fmt.Sprintf("   权限: %s", info.Mode.Perm().String()))
 	}
+	return lines
 }
 
 // getStatusDisplay 获取状态显示文本（带符号）
 func getStatusDisplay(status string) string {
-	symbol := getStatusSymbol(status)
-	text := getStatusText(status)
+	var symbol, text string
+	switch status {
+	case models.StatusAdded:
+		symbol = "➕"
+		text = "新增"
+	case models.StatusDeleted:
+		symbol = "➖"
+		text = "删除"
+	case models.StatusModified:
+		symbol = "🔄"
+		text = "修改"
+	case models.StatusUnchanged:
+		symbol = "✓"
+		text = "未变更"
+	default:
+		symbol = "?"
+		text = "未知"
+	}
 	return fmt.Sprintf("%s %s", symbol, text)
 }
 
-// PrintResults 打印对比结果（表格格式）
+// wrapText 文本换行处理，将长文本按指定宽度换行
+func wrapText(text string, width int) []string {
+	if len(text) <= width {
+		return []string{text}
+	}
+
+	var lines []string
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		// 如果没有空格，直接按字符截断
+		for i := 0; i < len(text); i += width {
+			end := i + width
+			if end > len(text) {
+				end = len(text)
+			}
+			lines = append(lines, text[i:end])
+		}
+		return lines
+	}
+
+	currentLine := ""
+	for _, word := range words {
+		if len(currentLine)+len(word)+1 <= width {
+			if currentLine != "" {
+				currentLine += " " + word
+			} else {
+				currentLine = word
+			}
+		} else {
+			if currentLine != "" {
+				lines = append(lines, currentLine)
+			}
+			// 如果单个词就超过宽度，需要截断
+			if len(word) > width {
+				for i := 0; i < len(word); i += width {
+					end := i + width
+					if end > len(word) {
+						end = len(word)
+					}
+					lines = append(lines, word[i:end])
+				}
+				currentLine = ""
+			} else {
+				currentLine = word
+			}
+		}
+	}
+	if currentLine != "" {
+		lines = append(lines, currentLine)
+	}
+	return lines
+}
+
+// maxInt 返回两个整数中的较大值
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// PrintResults 打印对比结果（表格格式：左侧目录 | 右侧目录 | 状态）
 func (r *Reporter) PrintResults(results []*models.DiffResult) {
 	fmt.Println()
-	fmt.Println("╔════════════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                        文件同步监测结果                                    ║")
-	fmt.Println("╚════════════════════════════════════════════════════════════════════════════╝")
+	fmt.Println("╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                                                                  文件同步监测结果                                                                              ║")
+	fmt.Println("╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
 	// 统计信息
@@ -110,41 +174,91 @@ func (r *Reporter) PrintResults(results []*models.DiffResult) {
 		fmt.Println("  所有文件一致，无差异")
 		fmt.Println()
 	} else {
+		// 列宽度定义
+		const leftColWidth = 50
+		const rightColWidth = 50
+		const statusColWidth = 20
+
 		// 打印表头
-		fmt.Println("┌──────────┬──────────────────────────────────────────────────────────────┐")
-		fmt.Printf("│ %-8s │ %-60s │\n", "状态", "文件路径")
-		fmt.Println("├──────────┼──────────────────────────────────────────────────────────────┤")
+		fmt.Println("┌" + strings.Repeat("─", leftColWidth+2) + "┬" + strings.Repeat("─", rightColWidth+2) + "┬" + strings.Repeat("─", statusColWidth+2) + "┐")
+		fmt.Printf("│ %-*s │ %-*s │ %-*s │\n", leftColWidth, "左侧目录", rightColWidth, "右侧目录", statusColWidth, "状态")
+		fmt.Println("├" + strings.Repeat("─", leftColWidth+2) + "┼" + strings.Repeat("─", rightColWidth+2) + "┼" + strings.Repeat("─", statusColWidth+2) + "┤")
 
 		// 打印表格内容
-		for _, result := range displayResults {
+		for i, result := range displayResults {
+			leftLines := formatFileInfo(result.LeftInfo)
+			rightLines := formatFileInfo(result.RightInfo)
 			status := getStatusDisplay(result.Status)
 
-			// 处理长路径（超过60字符时截断）
-			path := result.Path
-			if len(path) > 60 {
-				path = path[:57] + "..."
-			}
-
-			fmt.Printf("│ %-8s │ %-60s │\n", status, path)
-
-			// 如果有差异详情，显示详细信息
+			// 如果有差异详情，添加到状态列
+			statusLines := []string{status}
 			if len(result.Differences) > 0 {
 				for _, diff := range result.Differences {
 					// 格式化差异信息
 					diffLines := formatDiffDetails(diff, result)
-					for _, line := range diffLines {
-						fmt.Printf("│          │   %-58s │\n", truncateString(line, 58))
+					statusLines = append(statusLines, diffLines...)
+				}
+			}
+
+			// 计算需要多少行
+			maxLines := maxInt(len(leftLines), len(rightLines))
+			maxLines = maxInt(maxLines, len(statusLines))
+
+			// 打印每一行
+			for lineIdx := 0; lineIdx < maxLines; lineIdx++ {
+				var leftText, rightText, statusText string
+
+				if lineIdx < len(leftLines) {
+					leftText = leftLines[lineIdx]
+				}
+				if lineIdx < len(rightLines) {
+					rightText = rightLines[lineIdx]
+				}
+				if lineIdx < len(statusLines) {
+					statusText = statusLines[lineIdx]
+				}
+
+				// 处理长文本换行
+				leftWrapped := wrapText(leftText, leftColWidth)
+				rightWrapped := wrapText(rightText, rightColWidth)
+				statusWrapped := wrapText(statusText, statusColWidth)
+
+				// 计算需要多少行来显示（考虑换行）
+				wrappedMaxLines := maxInt(len(leftWrapped), len(rightWrapped))
+				wrappedMaxLines = maxInt(wrappedMaxLines, len(statusWrapped))
+
+				// 打印换行后的内容
+				for wrapIdx := 0; wrapIdx < wrappedMaxLines; wrapIdx++ {
+					var leftWrap, rightWrap, statusWrap string
+					if wrapIdx < len(leftWrapped) {
+						leftWrap = leftWrapped[wrapIdx]
 					}
+					if wrapIdx < len(rightWrapped) {
+						rightWrap = rightWrapped[wrapIdx]
+					}
+					if wrapIdx < len(statusWrapped) {
+						statusWrap = statusWrapped[wrapIdx]
+					}
+
+					// 确保文本不超过列宽，并正确对齐
+					leftDisplay := truncateString(leftWrap, leftColWidth)
+					rightDisplay := truncateString(rightWrap, rightColWidth)
+					statusDisplay := truncateString(statusWrap, statusColWidth)
+
+					fmt.Printf("│ %-*s │ %-*s │ %-*s │\n",
+						leftColWidth, leftDisplay,
+						rightColWidth, rightDisplay,
+						statusColWidth, statusDisplay)
 				}
 			}
 
 			// 添加分隔线（最后一个不添加）
-			if result != displayResults[len(displayResults)-1] {
-				fmt.Println("├──────────┼──────────────────────────────────────────────────────────────┤")
+			if i < len(displayResults)-1 {
+				fmt.Println("├" + strings.Repeat("─", leftColWidth+2) + "┼" + strings.Repeat("─", rightColWidth+2) + "┼" + strings.Repeat("─", statusColWidth+2) + "┤")
 			}
 		}
 
-		fmt.Println("└──────────┴──────────────────────────────────────────────────────────────┘")
+		fmt.Println("└" + strings.Repeat("─", leftColWidth+2) + "┴" + strings.Repeat("─", rightColWidth+2) + "┴" + strings.Repeat("─", statusColWidth+2) + "┘")
 		fmt.Println()
 	}
 
@@ -178,22 +292,26 @@ func formatDiffDetails(diff string, result *models.DiffResult) []string {
 		if result.LeftInfo != nil && result.RightInfo != nil {
 			leftSize := formatSize(result.LeftInfo.Size)
 			rightSize := formatSize(result.RightInfo.Size)
-			lines = append(lines, fmt.Sprintf("大小: %s → %s", leftSize, rightSize))
+			lines = append(lines, fmt.Sprintf("大小: %s→%s", leftSize, rightSize))
 		}
 	} else if strings.Contains(diff, "修改时间不同") {
 		if result.LeftInfo != nil && result.RightInfo != nil {
 			leftTime := result.LeftInfo.ModTime.Format("2006-01-02 15:04:05")
 			rightTime := result.RightInfo.ModTime.Format("2006-01-02 15:04:05")
-			lines = append(lines, fmt.Sprintf("修改时间: %s → %s", leftTime, rightTime))
+			lines = append(lines, fmt.Sprintf("时间: %s→%s", leftTime, rightTime))
 		}
 	} else if strings.Contains(diff, "权限不同") {
 		if result.LeftInfo != nil && result.RightInfo != nil {
 			leftPerm := result.LeftInfo.Mode.Perm().String()
 			rightPerm := result.RightInfo.Mode.Perm().String()
-			lines = append(lines, fmt.Sprintf("权限: %s → %s", leftPerm, rightPerm))
+			lines = append(lines, fmt.Sprintf("权限: %s→%s", leftPerm, rightPerm))
 		}
 	} else if strings.Contains(diff, "仅存在于") {
-		lines = append(lines, diff)
+		if strings.Contains(diff, "左侧") {
+			lines = append(lines, "仅左侧存在")
+		} else {
+			lines = append(lines, "仅右侧存在")
+		}
 	} else {
 		lines = append(lines, diff)
 	}
