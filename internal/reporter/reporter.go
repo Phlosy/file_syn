@@ -3,6 +3,7 @@ package reporter
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"file_syn/pkg/models"
 )
@@ -17,6 +18,106 @@ func NewReporter(showUnchanged bool) *Reporter {
 	return &Reporter{
 		showUnchanged: showUnchanged,
 	}
+}
+
+// displayWidth 计算字符串的显示宽度（中文字符占2个宽度，emoji通常占2个宽度）
+func displayWidth(s string) int {
+	width := 0
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+
+		// 检查是否是 emoji 或特殊符号（通常占2个宽度）
+		if r >= 0x1F300 && r <= 0x1F9FF { // Emoji range
+			width += 2
+			continue
+		}
+		if r >= 0x2600 && r <= 0x26FF { // Miscellaneous Symbols
+			width += 2
+			continue
+		}
+		if r >= 0x2700 && r <= 0x27BF { // Dingbats
+			width += 2
+			continue
+		}
+		if r >= 0xFE00 && r <= 0xFE0F { // Variation Selectors (emoji modifiers)
+			width += 0 // 这些是修饰符，不占宽度
+			continue
+		}
+		if r >= 0x200D { // Zero Width Joiner (emoji sequences)
+			// 检查是否是 emoji 序列的一部分
+			if i+1 < len(runes) && (runes[i+1] >= 0x1F300 && runes[i+1] <= 0x1F9FF) {
+				width += 0
+				continue
+			}
+		}
+
+		// 判断是否为全角字符（中文、日文、韩文等）
+		if r >= 0x1100 && (r <= 0x115F || // Hangul Jamo
+			r >= 0x2E80 && r <= 0x2EFF || // CJK Radicals Supplement
+			r >= 0x2F00 && r <= 0x2FDF || // Kangxi Radicals
+			r >= 0x3000 && r <= 0x303F || // CJK Symbols and Punctuation
+			r >= 0x3040 && r <= 0x309F || // Hiragana
+			r >= 0x30A0 && r <= 0x30FF || // Katakana
+			r >= 0x3100 && r <= 0x312F || // Bopomofo
+			r >= 0x3130 && r <= 0x318F || // Hangul Compatibility Jamo
+			r >= 0x3200 && r <= 0x32FF || // Enclosed CJK Letters and Months
+			r >= 0x3300 && r <= 0x33FF || // CJK Compatibility
+			r >= 0x3400 && r <= 0x4DBF || // CJK Unified Ideographs Extension A
+			r >= 0x4E00 && r <= 0x9FFF || // CJK Unified Ideographs
+			r >= 0xA000 && r <= 0xA48F || // Yi Syllables
+			r >= 0xA490 && r <= 0xA4CF || // Yi Radicals
+			r >= 0xAC00 && r <= 0xD7AF || // Hangul Syllables
+			r >= 0xF900 && r <= 0xFAFF || // CJK Compatibility Ideographs
+			r >= 0xFE30 && r <= 0xFE4F || // CJK Compatibility Forms
+			r >= 0xFF00 && r <= 0xFFEF) { // Halfwidth and Fullwidth Forms
+			width += 2
+		} else if r == utf8.RuneError {
+			width += 1
+		} else {
+			width += 1
+		}
+	}
+	return width
+}
+
+// padString 填充字符串到指定显示宽度
+func padString(s string, width int, alignLeft bool) string {
+	currentWidth := displayWidth(s)
+	if currentWidth >= width {
+		return s
+	}
+
+	padding := width - currentWidth
+	if alignLeft {
+		return s + strings.Repeat(" ", padding)
+	}
+	return strings.Repeat(" ", padding) + s
+}
+
+// truncateStringByWidth 按显示宽度截断字符串
+func truncateStringByWidth(s string, maxWidth int) string {
+	if displayWidth(s) <= maxWidth {
+		return s
+	}
+
+	width := 0
+	var result strings.Builder
+	for _, r := range s {
+		charWidth := 2
+		if r < 0x1100 || (r > 0x115F && r < 0x2E80) || (r > 0xFFEF) {
+			if r != utf8.RuneError {
+				charWidth = 1
+			}
+		}
+		if width+charWidth > maxWidth-3 {
+			result.WriteString("...")
+			break
+		}
+		result.WriteRune(r)
+		width += charWidth
+	}
+	return result.String()
 }
 
 // formatSize 格式化文件大小
@@ -75,56 +176,44 @@ func getStatusDisplay(status string) string {
 	return fmt.Sprintf("%s %s", symbol, text)
 }
 
-// wrapText 文本换行处理，将长文本按指定宽度换行
-func wrapText(text string, width int) []string {
-	if len(text) <= width {
+// wrapTextByWidth 按显示宽度换行文本
+func wrapTextByWidth(text string, width int) []string {
+	if displayWidth(text) <= width {
 		return []string{text}
 	}
 
 	var lines []string
-	words := strings.Fields(text)
-	if len(words) == 0 {
-		// 如果没有空格，直接按字符截断
-		for i := 0; i < len(text); i += width {
-			end := i + width
-			if end > len(text) {
-				end = len(text)
-			}
-			lines = append(lines, text[i:end])
-		}
-		return lines
-	}
-
 	currentLine := ""
-	for _, word := range words {
-		if len(currentLine)+len(word)+1 <= width {
-			if currentLine != "" {
-				currentLine += " " + word
-			} else {
-				currentLine = word
+	currentWidth := 0
+
+	for _, r := range text {
+		charWidth := 2
+		if r < 0x1100 || (r > 0x115F && r < 0x2E80) || (r > 0xFFEF) {
+			if r != utf8.RuneError {
+				charWidth = 1
 			}
-		} else {
+		}
+
+		if currentWidth+charWidth > width {
 			if currentLine != "" {
 				lines = append(lines, currentLine)
-			}
-			// 如果单个词就超过宽度，需要截断
-			if len(word) > width {
-				for i := 0; i < len(word); i += width {
-					end := i + width
-					if end > len(word) {
-						end = len(word)
-					}
-					lines = append(lines, word[i:end])
-				}
-				currentLine = ""
+				currentLine = string(r)
+				currentWidth = charWidth
 			} else {
-				currentLine = word
+				// 单个字符就超过宽度，强制换行
+				lines = append(lines, string(r))
+				currentWidth = 0
 			}
+		} else {
+			currentLine += string(r)
+			currentWidth += charWidth
 		}
 	}
+
 	if currentLine != "" {
 		lines = append(lines, currentLine)
 	}
+
 	return lines
 }
 
@@ -174,15 +263,33 @@ func (r *Reporter) PrintResults(results []*models.DiffResult) {
 		fmt.Println("  所有文件一致，无差异")
 		fmt.Println()
 	} else {
-		// 列宽度定义
+		// 列宽度定义（显示宽度）
 		const leftColWidth = 50
 		const rightColWidth = 50
 		const statusColWidth = 20
 
+		// 计算分隔线的实际字符数
+		// 每列格式：│ + 空格(1) + 内容(width) + 空格(1) = width + 2
+		leftSeparatorLen := leftColWidth + 2
+		rightSeparatorLen := rightColWidth + 2
+		statusSeparatorLen := statusColWidth + 2
+
+		// 创建分隔线的辅助函数
+		createSeparator := func(left, middle, right string) string {
+			return left + strings.Repeat("─", leftSeparatorLen) + middle + strings.Repeat("─", rightSeparatorLen) + middle + strings.Repeat("─", statusSeparatorLen) + right
+		}
+
 		// 打印表头
-		fmt.Println("┌" + strings.Repeat("─", leftColWidth+2) + "┬" + strings.Repeat("─", rightColWidth+2) + "┬" + strings.Repeat("─", statusColWidth+2) + "┐")
-		fmt.Printf("│ %-*s │ %-*s │ %-*s │\n", leftColWidth, "左侧目录", rightColWidth, "右侧目录", statusColWidth, "状态")
-		fmt.Println("├" + strings.Repeat("─", leftColWidth+2) + "┼" + strings.Repeat("─", rightColWidth+2) + "┼" + strings.Repeat("─", statusColWidth+2) + "┤")
+		headerLine := createSeparator("┌", "┬", "┐")
+		fmt.Println(headerLine)
+
+		leftHeader := padString("左侧目录", leftColWidth, true)
+		rightHeader := padString("右侧目录", rightColWidth, true)
+		statusHeader := padString("状态", statusColWidth, true)
+		fmt.Printf("│ %s │ %s │ %s │\n", leftHeader, rightHeader, statusHeader)
+
+		separatorLine := createSeparator("├", "┼", "┤")
+		fmt.Println(separatorLine)
 
 		// 打印表格内容
 		for i, result := range displayResults {
@@ -218,10 +325,10 @@ func (r *Reporter) PrintResults(results []*models.DiffResult) {
 					statusText = statusLines[lineIdx]
 				}
 
-				// 处理长文本换行
-				leftWrapped := wrapText(leftText, leftColWidth)
-				rightWrapped := wrapText(rightText, rightColWidth)
-				statusWrapped := wrapText(statusText, statusColWidth)
+				// 按显示宽度换行
+				leftWrapped := wrapTextByWidth(leftText, leftColWidth)
+				rightWrapped := wrapTextByWidth(rightText, rightColWidth)
+				statusWrapped := wrapTextByWidth(statusText, statusColWidth)
 
 				// 计算需要多少行来显示（考虑换行）
 				wrappedMaxLines := maxInt(len(leftWrapped), len(rightWrapped))
@@ -240,25 +347,28 @@ func (r *Reporter) PrintResults(results []*models.DiffResult) {
 						statusWrap = statusWrapped[wrapIdx]
 					}
 
-					// 确保文本不超过列宽，并正确对齐
-					leftDisplay := truncateString(leftWrap, leftColWidth)
-					rightDisplay := truncateString(rightWrap, rightColWidth)
-					statusDisplay := truncateString(statusWrap, statusColWidth)
+					// 按显示宽度截断并填充
+					leftDisplay := truncateStringByWidth(leftWrap, leftColWidth)
+					rightDisplay := truncateStringByWidth(rightWrap, rightColWidth)
+					statusDisplay := truncateStringByWidth(statusWrap, statusColWidth)
 
-					fmt.Printf("│ %-*s │ %-*s │ %-*s │\n",
-						leftColWidth, leftDisplay,
-						rightColWidth, rightDisplay,
-						statusColWidth, statusDisplay)
+					// 填充到指定宽度
+					leftPadded := padString(leftDisplay, leftColWidth, true)
+					rightPadded := padString(rightDisplay, rightColWidth, true)
+					statusPadded := padString(statusDisplay, statusColWidth, true)
+
+					fmt.Printf("│ %s │ %s │ %s │\n", leftPadded, rightPadded, statusPadded)
 				}
 			}
 
 			// 添加分隔线（最后一个不添加）
 			if i < len(displayResults)-1 {
-				fmt.Println("├" + strings.Repeat("─", leftColWidth+2) + "┼" + strings.Repeat("─", rightColWidth+2) + "┼" + strings.Repeat("─", statusColWidth+2) + "┤")
+				fmt.Println(separatorLine)
 			}
 		}
 
-		fmt.Println("└" + strings.Repeat("─", leftColWidth+2) + "┴" + strings.Repeat("─", rightColWidth+2) + "┴" + strings.Repeat("─", statusColWidth+2) + "┘")
+		footerLine := createSeparator("└", "┴", "┘")
+		fmt.Println(footerLine)
 		fmt.Println()
 	}
 
@@ -317,12 +427,4 @@ func formatDiffDetails(diff string, result *models.DiffResult) []string {
 	}
 
 	return lines
-}
-
-// truncateString 截断字符串
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
 }
